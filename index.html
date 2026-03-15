@@ -218,16 +218,9 @@ html,body{height:100%;background:var(--dark);color:var(--text);font-family:'Barl
 
   <!-- CONTROLS -->
   <div class="controls">
-    <button class="cbtn gold" id="tableBtn" onclick="scanTable()" disabled>&#9654; SCAN TABLE</button>
-    <button class="cbtn" id="cardsBtn" onclick="scanCards()" disabled style="border-color:#e74c3c;color:#e74c3c;">&#9829; MY CARDS</button>
-    <button class="cbtn" onclick="clearAdvice()" style="max-width:55px">CLEAR</button>
-  </div>
-  <div class="controls" style="padding-top:0;border-top:none;">
+    <button class="cbtn gold" id="snapBtn" onclick="snapAndAnalyze()" disabled>&#9654; SCAN</button>
     <button class="cbtn" id="autoBtn" onclick="toggleAuto()" disabled>AUTO: OFF</button>
-    <div id="tableStatus" style="flex:2;font-size:10px;color:var(--muted);letter-spacing:1px;padding:4px 8px;background:rgba(255,255,255,0.04);border-radius:7px;border:0.5px solid var(--border);display:flex;align-items:center;gap:6px;">
-      <span id="tableStatusDot" style="width:6px;height:6px;border-radius:50%;background:var(--muted);flex-shrink:0"></span>
-      <span id="tableStatusText">No table scan yet</span>
-    </div>
+    <button class="cbtn" onclick="clearAdvice()" style="max-width:60px">CLEAR</button>
   </div>
   <div class="interval-row">
     <label>Interval</label>
@@ -289,7 +282,6 @@ html,body{height:100%;background:var(--dark);color:var(--text);font-family:'Barl
 // STATE
 // ═══════════════════════════════════════════
 let stream=null, autoTimer=null, isRunning=false, isThinking=false, intervalSec=2, apiKey='';
-let tableContext=null; // stores last table scan result
 let sessionHands=0, sessionStart=Date.now();
 
 // players: { [name]: { hands, actions:[], aggCount, foldCount, callCount, raiseCount, vpip, reads:[] } }
@@ -439,257 +431,75 @@ function toggleAuto(){
     setStatus('live','READY'); showToast('Auto-scan stopped');
   } else {
     isRunning=true; btn.textContent='AUTO: ON'; btn.classList.add('running');
-    showToast('Auto: scanning table every '+intervalSec+'s');
-    scanTable();
-    autoTimer=setInterval(scanTable, intervalSec*1000);
+    showToast('Scanning every '+intervalSec+'s');
+    snapAndAnalyze();
+    autoTimer=setInterval(snapAndAnalyze, intervalSec*1000);
   }
 }
 
 // ═══════════════════════════════════════════
-// ENABLE BUTTONS AFTER CAMERA START
+// MAIN SCAN
 // ═══════════════════════════════════════════
-function enableScanButtons(){
-  document.getElementById('tableBtn').disabled=false;
-  document.getElementById('cardsBtn').disabled=false;
-  document.getElementById('autoBtn').disabled=false;
-}
-
-// ═══════════════════════════════════════════
-// SCAN TABLE — wide shot for context
-// ═══════════════════════════════════════════
-async function scanTable(){
+async function snapAndAnalyze(){
   if(isThinking||!stream) return;
   if(!apiKey){ changeKey(); return; }
   isThinking=true;
   document.getElementById('scanLine').classList.add('on');
-  setStatus('scan','SCANNING TABLE');
-  document.getElementById('tableBtn').disabled=true;
+  setStatus('scan','SCANNING');
+  document.getElementById('snapBtn').disabled=true;
   showThinking();
   const b64=captureFrame();
 
-  const prompt=`You are a poker AI analyzing a wide shot of an online poker table.
-Extract all context information visible. Do NOT worry about hole cards — focus on everything else.
+  const prompt=`You are an expert poker AI analyzing a photo of an online poker table taken with a phone camera.
+
+The image may be slightly blurry or at an angle — do your best to read everything.
+
+KEY FACTS:
+- The hero's hole cards are the TWO LARGE CARDS displayed prominently at the bottom center of the screen. They are bigger than all other cards. Read them first.
+- Community cards are the cards displayed face-up in the center of the table (up to 5 cards).
+- Player stacks are numbers shown below usernames around the table.
+- Pot amount is shown in the center of the table.
+- Even if blurry, use card shape, size and position to identify the hero hole cards.
+
+NEVER return action UNKNOWN if this is a poker table — always give a real action.
 
 Respond ONLY in this exact JSON (no markdown, no code fences):
 {
-  "community_cards": "e.g. 7h 6d 4c or none",
-  "pot": "total pot e.g. 2.10 or unknown",
-  "to_call": "amount to call if visible or unknown",
-  "position": "hero position if determinable or unknown",
-  "street": "Preflop / Flop / Turn / River",
-  "hero_stack": "hero stack or unknown",
+  "detected": {
+    "hole_cards": "hero's 2 cards e.g. Ah Kd — the two large cards at bottom center",
+    "community_cards": "e.g. 7h 6d 4c or none",
+    "pot": "pot amount e.g. 2.10 or unknown",
+    "to_call": "amount to call if visible or unknown",
+    "position": "hero position or unknown",
+    "street": "Preflop / Flop / Turn / River",
+    "stack": "hero stack or unknown"
+  },
+  "advice": {
+    "action": "FOLD or CHECK or CALL or RAISE or ALL-IN",
+    "amount": "raise amount or null",
+    "confidence": 0-100,
+    "equity": "estimated win % or unknown",
+    "pot_odds": "pot odds or unknown",
+    "reasoning": "2-3 sentences: what cards you detected and the best play"
+  },
   "players": [
     {
       "name": "username as shown",
-      "stack": "stack amount or unknown",
-      "action": "fold or call or raise or check or allin or waiting or unknown",
+      "action": "fold or call or raise or check or allin or unknown",
       "amount": "chip amount or null",
       "is_hero": true or false
     }
   ]
-}
-IMPORTANT: This poker site uses 4-color deck: hearts=RED, diamonds=BLUE, clubs=GREEN, spades=BLACK.`;
-
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1000,messages:[{role:'user',content:[
-        {type:'image',source:{type:'base64',media_type:'image/jpeg',data:b64}},
-        {type:'text',text:prompt}
-      ]}]})
-    });
-    const data=await res.json();
-    if(data.error) throw new Error(data.error.message);
-    const text=data.content.map(b=>b.text||'').join('');
-    tableContext=JSON.parse(text.replace(/```json|```/g,'').trim());
-    // Update status indicator
-    const dot=document.getElementById('tableStatusDot');
-    const txt=document.getElementById('tableStatusText');
-    dot.style.background='var(--green)';
-    const cc=tableContext.community_cards&&tableContext.community_cards!=='none'?tableContext.community_cards:'preflop';
-    txt.textContent=`✓ ${tableContext.street||'?'} · Pot: ${tableContext.pot||'?'} · ${cc}`;
-    // Track players
-    (tableContext.players||[]).forEach(p=>{
-      if(!p.name||p.is_hero) return;
-      const n=p.name.trim();
-      if(!players[n]) players[n]={hands:0,actions:[],aggCount:0,foldCount:0,callCount:0,raiseCount:0,checkCount:0,reads:[]};
-      const pl=players[n]; pl.hands++;
-      const act=(p.action||'unknown').toLowerCase();
-      pl.actions.push(act);
-      if(pl.actions.length>40) pl.actions.shift();
-      if(act==='fold') pl.foldCount++;
-      else if(act==='call') pl.callCount++;
-      else if(act==='raise'||act==='allin') pl.aggCount++,pl.raiseCount++;
-      else if(act==='check') pl.checkCount++;
-      generateReads(n);
-    });
-    savePlayers(); renderPlayers();
-    removeThinking();
-    showToast('Table scanned ✓ Now zoom on your cards → MY CARDS');
-    setStatus('live','READY');
-  } catch(e){
-    showError('Could not scan table. Try better lighting.');
-    setStatus('live','READY');
-  }
-  isThinking=false;
-  document.getElementById('scanLine').classList.remove('on');
-  document.getElementById('tableBtn').disabled=false;
-}
-
-// ═══════════════════════════════════════════
-// SCAN CARDS — zoom on hole cards
-// ═══════════════════════════════════════════
-async function scanCards(){
-  if(isThinking||!stream) return;
-  if(!apiKey){ changeKey(); return; }
-  isThinking=true;
-  document.getElementById('scanLine').classList.add('on');
-  setStatus('scan','READING CARDS');
-  document.getElementById('cardsBtn').disabled=true;
-  showThinking();
-  const b64=captureFrame();
-
-  const context = tableContext ? `
-Known table context from previous scan:
-- Community cards: ${tableContext.community_cards||'unknown'}
-- Pot: ${tableContext.pot||'unknown'}
-- Street: ${tableContext.street||'unknown'}
-- To call: ${tableContext.to_call||'unknown'}
-- Position: ${tableContext.position||'unknown'}
-- Hero stack: ${tableContext.hero_stack||'unknown'}
-` : 'No previous table scan available — use all visible info.';
-
-  const prompt=`You are a poker AI. The player has zoomed their camera onto their hole cards.
-${context}
-
-Your job: identify the hero's hole cards from this zoomed image, then give the optimal poker action.
-IMPORTANT: This poker site uses 4-color deck: hearts=RED, diamonds=BLUE, clubs=GREEN, spades=BLACK.
-Even if blurry, use color to identify suits. The two largest cards in the image are the hole cards.
-
-Respond ONLY in this exact JSON (no markdown, no code fences):
-{
-  "hole_cards": "e.g. Ah Kd — your best read even if uncertain",
-  "confidence_cards": 0-100,
-  "action": "FOLD or CHECK or CALL or RAISE or ALL-IN",
-  "amount": "raise amount or null",
-  "confidence": 0-100,
-  "equity": "estimated win % or unknown",
-  "pot_odds": "pot odds or unknown",
-  "reasoning": "2-3 sentences: what cards you see, why this action is correct given the table context"
 }`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:800,messages:[{role:'user',content:[
+      body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1200,messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:'image/jpeg',data:b64}},
         {type:'text',text:prompt}
       ]}]})
-    });
-    const data=await res.json();
-    if(data.error) throw new Error(data.error.message);
-    const text=data.content.map(b=>b.text||'').join('');
-    const result=JSON.parse(text.replace(/```json|```/g,'').trim());
-    showCardsResult(result);
-    sessionHands++;
-    document.getElementById('sessionHands').textContent=sessionHands;
-    addLogFromCards(result);
-    setStatus('live','LIVE');
-  } catch(e){
-    showError('Could not read cards. Zoom closer on your hole cards.');
-    setStatus('live','READY');
-  }
-  isThinking=false;
-  document.getElementById('scanLine').classList.remove('on');
-  document.getElementById('cardsBtn').disabled=false;
-}
-
-// legacy — kept for auto mode compatibility
-async function snapAndAnalyze(){
-  await scanTable();
-}
-
-// ═══════════════════════════════════════════
-// MAIN SCAN + AI (old — replaced above)
-// ═══════════════════════════════════════════
-async function snapAndAnalyze_old(){
-  if(isThinking||!stream) return;
-  if(!apiKey){ changeKey(); return; }
-  isThinking=true;
-  document.getElementById('scanLine').classList.add('on');
-  setStatus('scan','SCANNING');
-  document.getElementById('tableBtn').disabled=true;
-  showThinking();
-  const b64=captureFrame();
-
-  const prompt=`You are an expert poker AI analyzing a live photo of an online poker table taken with a phone camera pointed at a monitor. The image may be blurry, angled, or low resolution — that is normal. Read everything you can.
-
-CRITICAL RULES:
-- NEVER return action UNKNOWN unless this is literally not a poker game at all
-- Read ALL cards visible anywhere on screen — hole cards, community cards, opponent cards
-- IMPORTANT: This poker site uses a 4-color deck: hearts=RED, diamonds=BLUE, clubs=GREEN, spades=BLACK. Use these colors to identify suits even in blurry images
-- The hero hole cards are usually the largest cards displayed at the bottom center of the poker table UI
-- If you can see ANY cards, ANY pot, ANY player names — use them to give real advice
-- Pot amounts may have no dollar sign (e.g. "1,140" means 1140 chips)
-- Player stacks are numbers shown below their usernames
-- Actions like FOLD CALL RAISE CHECK may appear as labels near players
-- Even partial information is enough — always give a real poker action
-
-Your job:
-1. Read every visible piece of info — cards, pot, stacks, player names, actions, street
-2. Give the BEST poker advice for the hero based on everything visible
-3. Track all visible player names and their current actions
-
-Respond ONLY in this exact JSON (no markdown, no code fences):
-{
-  "detected": {
-    "hole_cards": "hero cards e.g. 8h 3c — largest cards at bottom of screen",
-    "community_cards": "e.g. 7c 8h Js or none if preflop",
-    "pot": "total pot shown e.g. 1140",
-    "to_call": "amount to call if visible or unknown",
-    "position": "hero position if determinable or unknown",
-    "street": "Preflop / Flop / Turn / River — count community cards to determine",
-    "stack": "hero stack if visible or unknown"
-  },
-  "advice": {
-    "action": "FOLD or CHECK or CALL or RAISE or ALL-IN — always give a real action",
-    "amount": "suggested raise amount or null",
-    "confidence": 0-100,
-    "equity": "estimated win % based on visible cards or unknown",
-    "pot_odds": "pot odds if calculable or unknown",
-    "reasoning": "2-3 sentences — describe what cards and info you detected, then give the best play"
-  },
-  "players": [
-    {
-      "name": "exact username as shown on screen",
-      "action": "fold or call or raise or check or allin or unknown",
-      "amount": "chip amount if visible or null",
-      "is_hero": true or false
-    }
-  ]
-}
-
-List every player name readable. Always give a real poker action — only use UNKNOWN if this is not a poker game.`;
-
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'x-api-key':apiKey,
-        'anthropic-version':'2023-06-01',
-        'anthropic-dangerous-direct-browser-access':'true'
-      },
-      body:JSON.stringify({
-        model:'claude-haiku-4-5-20251001',
-        max_tokens:1500,
-        messages:[{role:'user',content:[
-          {type:'image',source:{type:'base64',media_type:'image/jpeg',data:b64}},
-          {type:'text',text:prompt}
-        ]}]
-      })
     });
     const data=await res.json();
     if(data.error) throw new Error(data.error.message);
@@ -706,50 +516,6 @@ List every player name readable. Always give a real poker action — only use UN
   isThinking=false;
   document.getElementById('scanLine').classList.remove('on');
   document.getElementById('snapBtn').disabled=false;
-}
-
-// ═══════════════════════════════════════════
-// SHOW CARDS RESULT
-// ═══════════════════════════════════════════
-function showCardsResult(r){
-  removeThinking();
-  document.getElementById('emptyAdvice')?.remove();
-  const actionCls={FOLD:'a-fold',CHECK:'a-check',CALL:'a-call',RAISE:'a-raise','ALL-IN':'a-allin',UNKNOWN:'a-unknown'}[r.action]||'a-unknown';
-  const tc=tableContext||{};
-  const parts=[
-    r.hole_cards?'♥ '+r.hole_cards:null,
-    tc.community_cards&&tc.community_cards!=='none'?'◆ '+tc.community_cards:null,
-    tc.pot?'Pot: '+tc.pot:null,
-    tc.to_call&&tc.to_call!=='unknown'?'Call: '+tc.to_call:null,
-    tc.position&&tc.position!=='unknown'?tc.position:null,
-    tc.street||null,
-  ].filter(Boolean);
-  const amt=r.amount&&r.amount!=='null'?' '+String(r.amount).replace(/[^0-9.€$]/g,''):'';
-  const card=document.createElement('div'); card.className='advice-card';
-  card.innerHTML=`
-    <div class="detected-row">${parts.join(' · ')||'Cards scanned'}</div>
-    <div class="advice-action ${actionCls}">${r.action||'?'}${amt}</div>
-    <div class="pills">
-      ${r.confidence!=null?`<span class="pill">Confidence ${r.confidence}%</span>`:''}
-      ${r.confidence_cards!=null?`<span class="pill">Cards read ${r.confidence_cards}%</span>`:''}
-      ${r.equity&&r.equity!=='unknown'?`<span class="pill">Equity ${r.equity}</span>`:''}
-      ${r.pot_odds&&r.pot_odds!=='unknown'?`<span class="pill">Odds ${r.pot_odds}</span>`:''}
-    </div>
-    <div class="reasoning">${r.reasoning||''}</div>`;
-  document.getElementById('panel-advice').insertBefore(card,document.getElementById('panel-advice').firstChild);
-}
-
-function addLogFromCards(r){
-  const container=document.getElementById('logContainer');
-  container.querySelector('.no-players')?.remove();
-  const now=new Date();
-  const time=now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
-  const tc=tableContext||{};
-  const detail=[r.hole_cards,tc.community_cards&&tc.community_cards!=='none'?tc.community_cards:null,tc.street,tc.pot?'Pot: '+tc.pot:null].filter(Boolean).join(' · ');
-  const entry=document.createElement('div'); entry.className='log-entry';
-  const actionCls={FOLD:'a-fold',CHECK:'a-check',CALL:'a-call',RAISE:'a-raise','ALL-IN':'a-allin'}[r.action]||'a-unknown';
-  entry.innerHTML=`<div class="log-time">${time}</div><div class="log-body"><div class="log-action ${actionCls}">${r.action||'?'}</div><div class="log-detail">${detail||'Hand recorded'}</div></div>`;
-  container.insertBefore(entry,container.firstChild);
 }
 
 // ═══════════════════════════════════════════
