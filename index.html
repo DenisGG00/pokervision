@@ -411,43 +411,53 @@ async function snapAndAnalyze(){
 
   const b64=captureFrame();
 
-  const prompt=`You are an expert poker AI and player-tracking system analyzing a live screenshot of an online poker table.
+  const prompt=`You are an expert poker AI analyzing a live photo of an online poker table taken with a phone camera pointed at a monitor. The image may be blurry, angled, or low resolution — that is normal. Read everything you can.
 
-Your job is TWO things:
-1. Give the optimal poker action for the hero (the player whose hole cards are visible / marked as "you")
-2. Detect and report ALL visible player names and their actions this hand
+CRITICAL RULES:
+- NEVER return action UNKNOWN unless this is literally not a poker game at all
+- Read ALL cards visible anywhere on screen — hole cards, community cards, opponent cards
+- The hero hole cards are usually the largest cards displayed at the bottom center of the poker table UI
+- If you can see ANY cards, ANY pot, ANY player names — use them to give real advice
+- Pot amounts may have no dollar sign (e.g. "1,140" means 1140 chips)
+- Player stacks are numbers shown below their usernames
+- Actions like FOLD CALL RAISE CHECK may appear as labels near players
+- Even partial information is enough — always give a real poker action
+
+Your job:
+1. Read every visible piece of info — cards, pot, stacks, player names, actions, street
+2. Give the BEST poker advice for the hero based on everything visible
+3. Track all visible player names and their current actions
 
 Respond ONLY in this exact JSON (no markdown, no code fences):
 {
   "detected": {
-    "hole_cards": "e.g. Ah Kd or unknown",
-    "community_cards": "e.g. 7c 8h Js or none",
-    "pot": "e.g. $240 or unknown",
-    "to_call": "e.g. $60 or unknown",
-    "position": "e.g. BTN or unknown",
-    "street": "Preflop / Flop / Turn / River or unknown",
-    "stack": "e.g. $800 or unknown"
+    "hole_cards": "hero cards e.g. 8h 3c — largest cards at bottom of screen",
+    "community_cards": "e.g. 7c 8h Js or none if preflop",
+    "pot": "total pot shown e.g. 1140",
+    "to_call": "amount to call if visible or unknown",
+    "position": "hero position if determinable or unknown",
+    "street": "Preflop / Flop / Turn / River — count community cards to determine",
+    "stack": "hero stack if visible or unknown"
   },
   "advice": {
-    "action": "FOLD or CHECK or CALL or RAISE or ALL-IN or UNKNOWN",
-    "amount": "raise amount or null",
+    "action": "FOLD or CHECK or CALL or RAISE or ALL-IN — always give a real action",
+    "amount": "suggested raise amount or null",
     "confidence": 0-100,
-    "equity": "e.g. 64% or unknown",
-    "pot_odds": "e.g. 4:1 or unknown",
-    "reasoning": "2-3 sentences on hand strength, position, pot odds, recommended play"
+    "equity": "estimated win % based on visible cards or unknown",
+    "pot_odds": "pot odds if calculable or unknown",
+    "reasoning": "2-3 sentences — describe what cards and info you detected, then give the best play"
   },
   "players": [
     {
       "name": "exact username as shown on screen",
       "action": "fold or call or raise or check or allin or unknown",
-      "amount": "dollar amount if visible or null",
+      "amount": "chip amount if visible or null",
       "is_hero": true or false
     }
   ]
 }
 
-List every player name you can read from the table. If you cannot detect any players, return an empty array.
-If this is not a poker game, set advice.action to UNKNOWN.`;
+List every player name readable. Always give a real poker action — only use UNKNOWN if this is not a poker game.`;
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages',{
